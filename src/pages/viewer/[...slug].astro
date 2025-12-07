@@ -1,0 +1,299 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import fs from 'node:fs';
+import path from 'node:path';
+
+export function getStaticPaths() {
+  // In a real dynamic app we might not need this if we use SSR, 
+  // but for static build we need to list all PDFs.
+  // However, since the user wants to just drop files, we might want to use 'server' output or 
+  // just generate paths for existing files at build time.
+  // For now, let's assume we scan the directory at build time.
+  
+  const slidesDir = path.join(process.cwd(), 'public', 'slides');
+  
+  function getPdfFiles(dir: string, baseDir: string): string[] {
+    let results: string[] = [];
+    if (!fs.existsSync(dir)) return results;
+    const list = fs.readdirSync(dir);
+    list.forEach((file) => {
+      const filePath = path.join(dir, file);
+      const stat = fs.statSync(filePath);
+      if (stat && stat.isDirectory()) {
+        results = results.concat(getPdfFiles(filePath, baseDir));
+      } else {
+        if (path.extname(file).toLowerCase() === '.pdf') {
+           const relativePath = path.relative(path.join(process.cwd(), 'public'), filePath);
+           // Remove extension for slug if desired, or keep it. 
+           // Let's keep the full relative path as slug for simplicity in matching.
+           // slug will be like "slides/2025/12/file.pdf"
+           // But the route is viewer/[...slug], so we want the slug to be the part AFTER /viewer/
+           // If we pass "slides/..." it works.
+           results.push(relativePath);
+        }
+      }
+    });
+    return results;
+  }
+
+  const files = getPdfFiles(slidesDir, slidesDir);
+  
+  return files.map(f => ({
+    params: { slug: f },
+    props: { pdfUrl: encodeURI('/' + f) }
+  }));
+}
+
+const { pdfUrl } = Astro.props;
+const { slug } = Astro.params;
+const fileName = path.basename(slug || '');
+---
+
+<Layout title={`Viewing: ${fileName}`} fluid={true}>
+  <div class="container-fluid vh-100 d-flex flex-column p-0">
+    <!-- Toolbar -->
+    <div class="bg-dark text-white p-2 d-flex justify-content-between align-items-center shadow-sm">
+      <div class="d-flex align-items-center">
+        <a href="/" class="btn btn-outline-light btn-sm me-3">
+          <i class="bi bi-arrow-left"></i> Back
+        </a>
+        <span class="h6 mb-0 text-truncate" style="max-width: 300px;">{fileName}</span>
+      </div>
+      
+      <div class="d-flex align-items-center gap-2">
+        <button id="prev" class="btn btn-secondary btn-sm">
+          <i class="bi bi-chevron-left"></i>
+        </button>
+        <span id="page_num" class="mx-2"></span> / <span id="page_count"></span>
+        <button id="next" class="btn btn-secondary btn-sm">
+          <i class="bi bi-chevron-right"></i>
+        </button>
+      </div>
+
+      <div class="d-flex align-items-center gap-2">
+        <button id="zoom_out" class="btn btn-secondary btn-sm">
+          <i class="bi bi-dash-lg"></i>
+        </button>
+        <button id="zoom_in" class="btn btn-secondary btn-sm">
+          <i class="bi bi-plus-lg"></i>
+        </button>
+        <button id="fullscreen" class="btn btn-secondary btn-sm">
+          <i class="bi bi-arrows-fullscreen"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Viewer Container -->
+    <div id="canvas-container" class="flex-grow-1 bg-secondary d-flex justify-content-center overflow-auto py-4 position-relative" data-pdf-url={pdfUrl}>
+      <canvas id="the-canvas" class="shadow"></canvas>
+    </div>
+  </div>
+</Layout>
+
+<script is:inline define:vars={{ pdfUrl }}>
+  (async () => {
+    try {
+      // Dynamic import to avoid module issues and allow define:vars
+      const pdfjsLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/+esm');
+      
+      // Set worker
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
+
+      if (!pdfUrl) {
+        throw new Error('PDF URL is missing');
+      }
+
+      console.log('Initializing PDF viewer for:', pdfUrl);
+
+      let pdfDoc = null;
+      let pageNum = 1;
+      let pageRendering = false;
+      let pageNumPending = null;
+      let scale = 1.5;
+      const canvas = document.getElementById('the-canvas');
+      const ctx = canvas.getContext('2d');
+      const pageNumSpan = document.getElementById('page_num');
+      const pageCountSpan = document.getElementById('page_count');
+
+      /**
+       * Get page info from document, resize canvas accordingly, and render page.
+       * @param num Page number.
+       */
+      async function renderPage(num) {
+        pageRendering = true;
+        try {
+          // Fetch page
+          const page = await pdfDoc.getPage(num);
+          const viewport = page.getViewport({scale: scale});
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+
+          // Render PDF page into canvas context
+          const renderContext = {
+            canvasContext: ctx,
+            viewport: viewport
+          };
+          const renderTask = page.render(renderContext);
+
+          // Wait for render to finish
+          await renderTask.promise;
+          pageRendering = false;
+          if (pageNumPending !== null) {
+            renderPage(pageNumPending);
+            pageNumPending = null;
+          }
+        } catch (error) {
+          console.error('Error rendering page:', error);
+          pageRendering = false;
+        }
+
+        // Update page counters
+        if (pageNumSpan) pageNumSpan.textContent = num;
+      }
+
+      /**
+       * If another page rendering in progress, waits until the rendering is
+       * finised. Otherwise, executes rendering immediately.
+       */
+      function queueRenderPage(num) {
+        if (pageRendering) {
+          pageNumPending = num;
+        } else {
+          renderPage(num);
+        }
+      }
+
+      /**
+       * Displays previous page.
+       */
+      function onPrevPage() {
+        if (pageNum <= 1) {
+          return;
+        }
+        pageNum--;
+        queueRenderPage(pageNum);
+      }
+      const prevBtn = document.getElementById('prev');
+      if (prevBtn) prevBtn.addEventListener('click', onPrevPage);
+
+      /**
+       * Displays next page.
+       */
+      function onNextPage() {
+        if (pageNum >= pdfDoc.numPages) {
+          return;
+        }
+        pageNum++;
+        queueRenderPage(pageNum);
+      }
+      const nextBtn = document.getElementById('next');
+      if (nextBtn) nextBtn.addEventListener('click', onNextPage);
+
+      /**
+       * Zoom In
+       */
+      const zoomInBtn = document.getElementById('zoom_in');
+      if (zoomInBtn) {
+        zoomInBtn.addEventListener('click', () => {
+          console.log('Zoom In clicked');
+          scale += 0.2;
+          renderPage(pageNum);
+        });
+      }
+
+      /**
+       * Zoom Out
+       */
+      const zoomOutBtn = document.getElementById('zoom_out');
+      if (zoomOutBtn) {
+        zoomOutBtn.addEventListener('click', () => {
+          console.log('Zoom Out clicked');
+          if (scale > 0.4) {
+            scale -= 0.2;
+            renderPage(pageNum);
+          }
+        });
+      }
+
+      /**
+       * Fullscreen
+       */
+      const fullscreenBtn = document.getElementById('fullscreen');
+      if (fullscreenBtn) {
+        fullscreenBtn.addEventListener('click', () => {
+            const elem = document.getElementById('canvas-container');
+            if (!document.fullscreenElement) {
+              elem.requestFullscreen().catch(err => {
+                console.error(`Error attempting to enable full-screen mode: ${err.message}`);
+              });
+            } else {
+              document.exitFullscreen();
+            }
+        });
+      }
+
+      // Helper to fit width
+      async function fitToContainer() {
+        if (!pdfDoc || !container) return;
+        try {
+            const page = await pdfDoc.getPage(pageNum);
+            const unscaledViewport = page.getViewport({scale: 1});
+            const containerWidth = container.clientWidth - 40; // Subtract padding
+            const fitScale = containerWidth / unscaledViewport.width;
+            scale = fitScale;
+            console.log('Scale set to:', scale);
+            renderPage(pageNum);
+        } catch (e) {
+            console.error('Error fitting to container:', e);
+        }
+      }
+
+      // Load PDF
+      console.log('Loading PDF document...');
+      const loadingTask = pdfjsLib.getDocument({
+        url: pdfUrl,
+        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/cmaps/',
+        cMapPacked: true,
+      });
+      
+      pdfDoc = await loadingTask.promise;
+      console.log('PDF loaded, pages:', pdfDoc.numPages);
+      
+      if (pageCountSpan) pageCountSpan.textContent = pdfDoc.numPages;
+
+      // Initial fit
+      await fitToContainer();
+
+      // Add resize listener (debounced slightly or just direct)
+      let resizeTimeout;
+      window.addEventListener('resize', () => {
+          clearTimeout(resizeTimeout);
+          resizeTimeout = setTimeout(() => {
+              fitToContainer();
+          }, 100);
+      });
+
+      // Add fullscreen change listener
+      document.addEventListener('fullscreenchange', () => {
+          // Give a small delay for layout to settle
+          setTimeout(() => {
+              fitToContainer();
+          }, 100);
+      });
+
+    } catch (error) {
+      console.error('Critical Error in PDF Viewer:', error);
+      alert('PDFの読み込みに失敗しました: ' + error.message);
+    }
+  })();
+</script>
+
+<style>
+  #canvas-container {
+    background-color: #525659; /* Standard PDF viewer background color */
+  }
+  canvas {
+    direction: ltr;
+    display: block;
+  }
+</style>

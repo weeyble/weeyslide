@@ -1,0 +1,17 @@
+{
+  "name": "weeyslide",
+  "type": "module",
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "astro": "^5.16.4",
+    "bootstrap": "^5.3.8",
+    "pdfjs-dist": "^5.4.449",
+    "sass": "^1.94.2"
+  }
+}
