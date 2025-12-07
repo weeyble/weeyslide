@@ -1,0 +1,95 @@
+---
+import Layout from '../layouts/Layout.astro';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const slidesDir = path.join(process.cwd(), 'public', 'slides');
+
+interface Slide {
+  name: string;
+  url: string;
+  date: string;
+}
+
+function getSlides(dir: string, baseDir: string): Slide[] {
+  let results: Slide[] = [];
+  
+  if (!fs.existsSync(dir)) {
+    return results;
+  }
+
+  const list = fs.readdirSync(dir);
+  
+  list.forEach((file) => {
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+    
+    if (stat && stat.isDirectory()) {
+      results = results.concat(getSlides(filePath, baseDir));
+    } else {
+      if (path.extname(file).toLowerCase() === '.pdf') {
+        // Create relative path for URL
+        const relativePath = path.relative(path.join(process.cwd(), 'public'), filePath);
+        // Ensure forward slashes for URL
+        const cleanPath = relativePath.split(path.sep).join('/');
+        const url = `/viewer/${cleanPath}`;
+        
+        // Try to extract date from path (e.g., 2025/12) or use mtime
+        // Here we just use the directory structure as a hint or file mtime
+        const date = stat.mtime.toLocaleDateString('ja-JP');
+
+        results.push({
+          name: file,
+          url: url,
+          date: date
+        });
+      }
+    }
+  });
+  
+  return results;
+}
+
+const slides = getSlides(slidesDir, slidesDir);
+
+// Sort by date desc (optional)
+slides.sort((a, b) => b.date.localeCompare(a.date));
+---
+
+<Layout title="Slide Share">
+	<main>
+		<h1 class="my-4">スライド一覧</h1>
+		
+		{slides.length === 0 ? (
+			<div class="alert alert-info">スライドが見つかりませんでした。</div>
+		) : (
+			<div class="row row-cols-1 row-cols-md-3 g-4">
+				{slides.map((slide) => (
+					<div class="col">
+						<div class="card h-100 shadow-sm">
+							<div class="card-body">
+								<h5 class="card-title text-truncate" title={slide.name}>
+                                    <i class="bi bi-file-earmark-pdf text-danger me-2"></i>
+                                    {slide.name}
+                                </h5>
+								<p class="card-text text-muted small">
+                                    更新日: {slide.date}
+                                </p>
+							</div>
+                            <div class="card-footer bg-transparent border-top-0">
+                                <a href={slide.url} class="btn btn-outline-primary w-100">
+                                    閲覧する
+                                </a>
+                            </div>
+						</div>
+					</div>
+				))}
+			</div>
+		)}
+	</main>
+</Layout>
+
+<style>
+    /* Optional: Add Bootstrap Icons if not already included, or use SVG */
+    /* For simplicity, I'll add a CDN link for icons in the Layout or just use text/emoji if icons fail */
+</style>
